@@ -207,6 +207,73 @@ def sync_session_process(user_id, pid, filename, status, logs_list):
 
 
 # ==========================================
+# PYTHON PACKAGE AUTO / MANUAL INSTALLER
+# ==========================================
+MODULE_ERROR_RE = re.compile(r"ModuleNotFoundError:\s+No module named ['\"]([^'\"]+)['\"]")
+
+PYPI_NAME_OVERRIDES = {
+    "cv2": "opencv-python", "pil": "Pillow", "PIL": "Pillow",
+    "bs4": "beautifulsoup4", "sklearn": "scikit-learn",
+    "yaml": "PyYAML", "dotenv": "python-dotenv",
+    "Crypto": "pycryptodome", "dateutil": "python-dateutil",
+    "jwt": "PyJWT", "serial": "pyserial",
+    "psycopg2": "psycopg2-binary", "mysql": "mysql-connector-python",
+    "attr": "attrs", "OpenSSL": "pyOpenSSL",
+    "telegram": "python-telegram-bot", "pptx": "python-pptx",
+    "docx": "python-docx", "fitz": "PyMuPDF", "qrcode": "qrcode",
+}
+
+
+def _normalize_package_name(mod_name):
+    root = (mod_name or "").split(".")[0]
+    return PYPI_NAME_OVERRIDES.get(root, root)
+
+
+def install_packages(packages, timeout=240):
+    """Pip-install a set of packages (module names are auto-mapped to PyPI)."""
+    pkgs = sorted({_normalize_package_name(p) for p in packages if p})
+    if not pkgs:
+        return True, "ℹ️ No packages to install."
+    cmd = [sys.executable, "-m", "pip", "install", "--no-input",
+           "--disable-pip-version-check", "--quiet", *pkgs]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if r.returncode == 0:
+            return True, f"✅ Installed: <code>{', '.join(pkgs)}</code>"
+        tail = (r.stderr or r.stdout or "").strip()[-600:]
+        return False, f"⚠️ pip failed for <code>{', '.join(pkgs)}</code>:\n<pre>{tail}</pre>"
+    except subprocess.TimeoutExpired:
+        return False, f"⚠️ pip timed out for <code>{', '.join(pkgs)}</code>"
+    except Exception as e:
+        return False, f"⚠️ pip error: {e}"
+
+
+def _rerun_kb():
+    kb = InlineKeyboardMarkup()
+    kb.add(cbtn("▶️ Run Again", callback_data="terminal_rerun", style="success"))
+    kb.add(cbtn("🖥️ Open Terminal", callback_data="terminal_view", style="primary"))
+    return kb
+
+
+def _auto_install_and_notify_quickrun(user_id, missing):
+    """Called from the streaming thread after a quick-run dies with ModuleNotFoundError."""
+    def _worker():
+        ok, msg = install_packages(missing)
+        try:
+            bot.send_message(
+                user_id,
+                f"📦 <b>Missing packages detected</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Your script failed due to missing module(s): "
+                f"<code>{', '.join(sorted(missing))}</code>\n\n{msg}",
+                reply_markup=_rerun_kb()
+            )
+        except Exception:
+            pass
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+# ==========================================
 # LIGHTWEIGHT RDP-GUARD AST SCANNER
 # ==========================================
 class RDPGuardScanner(ast.NodeVisitor):
@@ -297,6 +364,7 @@ def is_user_process_running(user_id):
 
 def _stream_stdout_worker(user_id, proc, log_buffer, filename, log_file_path):
     uid = str(user_id)
+    missing_modules = set()
     try:
         with open(log_file_path, "a", encoding="utf-8", errors="replace") as lf:
             for raw_line in iter(proc.stdout.readline, ''):
@@ -309,12 +377,17 @@ def _stream_stdout_worker(user_id, proc, log_buffer, filename, log_file_path):
                     lf.write(timestamped + "\n")
                     lf.flush()
                     sync_session_process(uid, proc.pid, filename, "RUNNING", log_buffer)
+                    m = MODULE_ERROR_RE.search(cleaned)
+                    if m:
+                        missing_modules.add(m.group(1).split(".")[0])
     except Exception as e:
         log_buffer.append(f"[Stream Error] {str(e)}")
     finally:
         exit_code = proc.poll()
         log_buffer.append(f"[{datetime.now().strftime('%H:%M:%S')}] Process exited with code {exit_code}")
         sync_session_process(uid, proc.pid, filename, f"EXITED ({exit_code})", log_buffer)
+        if missing_modules:
+            _auto_install_and_notify_quickrun(user_id, missing_modules)
 
 
 def start_user_script(user_id, file_path, filename, startup_inputs=None):
@@ -373,7 +446,9 @@ def start_user_script(user_id, file_path, filename, startup_inputs=None):
             "logs": log_buffer,
             "filename": filename,
             "start_time": time.time(),
-            "log_file": log_file_path
+            "log_file": log_file_path,
+            "file_path": file_path,
+            "startup_inputs": startup_inputs,
         }
 
         sync_session_process(uid, proc.pid, filename, "RUNNING", log_buffer)
@@ -471,6 +546,7 @@ def _rotate_log_if_needed(log_path):
 
 
 def _deployment_log_streamer(deploy_id, proc, logs, log_file):
+    missing_modules = set()
     try:
         with open(log_file, "a", encoding="utf-8", errors="replace") as lf:
             for raw_line in iter(proc.stdout.readline, ''):
@@ -482,6 +558,9 @@ def _deployment_log_streamer(deploy_id, proc, logs, log_file):
                     logs.append(ts)
                     lf.write(ts + "\n")
                     lf.flush()
+                    m = MODULE_ERROR_RE.search(cleaned)
+                    if m:
+                        missing_modules.add(m.group(1).split(".")[0])
     except Exception as e:
         logs.append(f"[Stream Error] {e}")
     finally:
@@ -489,6 +568,21 @@ def _deployment_log_streamer(deploy_id, proc, logs, log_file):
             _rotate_log_if_needed(log_file)
         except Exception:
             pass
+        if missing_modules:
+            def _install_worker():
+                ok, msg = install_packages(missing_modules)
+                with deployments_lock:
+                    d = load_deployments()
+                dep = d["deployments"].get(deploy_id)
+                if dep:
+                    try:
+                        bot.send_message(
+                            dep["user_id"],
+                            f"📦 <b>Deployment #{deploy_id}</b> auto-install result:\n{msg}"
+                        )
+                    except Exception:
+                        pass
+            threading.Thread(target=_install_worker, daemon=True).start()
 
 
 def create_deployment(user_id, filename, file_path, auto_restart=True, port=None):
@@ -774,7 +868,7 @@ def terminal_kb(user_id):
             cbtn("📥 Export Last Log", callback_data="terminal_export")
         )
         kb.add(cbtn("📤 Upload New File", callback_data="upload_file", style="success"))
-
+    kb.add(cbtn("📦 Install Package (pip)", callback_data="terminal_install_pkg", style="primary"))
     kb.add(cbtn("⬅️ Back to Main Menu", callback_data="back_home"))
     return kb
 
@@ -997,6 +1091,25 @@ def cmd_start(message):
     )
 
 
+@bot.message_handler(commands=["pip"])
+def cmd_pip(message):
+    user = message.from_user
+    register_or_update_user(user)
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.reply_to(message, "📦 Usage: <code>/pip package1 package2</code>\nExample: <code>/pip requests numpy</code>")
+        return
+    packages = [p.strip() for p in re.split(r"[,\s]+", parts[1]) if p.strip()]
+    bot.reply_to(message, f"⏳ Installing: <code>{', '.join(packages)}</code>...")
+    def _w():
+        ok, msg = install_packages(packages)
+        try:
+            bot.send_message(message.chat.id, msg)
+        except Exception:
+            pass
+    threading.Thread(target=_w, daemon=True).start()
+
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     user = call.from_user
@@ -1134,6 +1247,41 @@ def handle_callbacks(call):
         if term_text:
             bot.edit_message_text(term_text, call.message.chat.id, call.message.message_id,
                                   reply_markup=terminal_kb(user_id))
+
+    elif data == "terminal_install_pkg":
+        set_user_state(user_id, "AWAITING_PKG_NAME")
+        kb = InlineKeyboardMarkup()
+        kb.add(cbtn("⬅️ Back to Terminal", callback_data="terminal_view", style="primary"))
+        bot.edit_message_text(
+            "📦 <b>Install Python Package</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Send one or more package names (space or comma separated).\n\n"
+            "Example: <code>requests numpy pandas</code>\n"
+            "<i>Installed into the bot's Python env via pip. Already-installed packages are skipped.</i>",
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=kb
+        )
+
+    elif data == "terminal_rerun":
+        info = runtime_processes.get(uid)
+        if not info or not info.get("file_path") or not os.path.exists(info["file_path"]):
+            bot.answer_callback_query(call.id, "⚠️ Original file no longer available. Upload again.", show_alert=True)
+            return
+        ok, msg = start_user_script(
+            user_id, info["file_path"], info["filename"],
+            startup_inputs=info.get("startup_inputs")
+        )
+        if not ok:
+            bot.answer_callback_query(call.id, f"⚠️ {msg}", show_alert=True)
+            return
+        time.sleep(0.8)
+        bot.edit_message_text(
+            build_terminal_text(user_id),
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=terminal_kb(user_id)
+        )
 
     # ---------------- DEPLOYMENTS ----------------
     elif data == "deployments_menu":
@@ -1658,6 +1806,22 @@ def handle_text_states(message):
         time.sleep(0.5)
         term_text = build_terminal_text(user_id) or f"ℹ️ {res}"
         bot.reply_to(message, term_text, reply_markup=terminal_kb(user_id))
+        return
+
+    elif step == "AWAITING_PKG_NAME":
+        set_user_state(user_id, "IDLE")
+        packages = [p.strip() for p in re.split(r"[,\s]+", text) if p.strip()]
+        if not packages:
+            bot.reply_to(message, "❌ No package names provided.", reply_markup=terminal_kb(user_id))
+            return
+        bot.reply_to(message, f"⏳ Installing: <code>{', '.join(packages)}</code>...")
+        def _w():
+            ok, msg = install_packages(packages)
+            try:
+                bot.send_message(message.chat.id, msg, reply_markup=terminal_kb(user_id))
+            except Exception:
+                pass
+        threading.Thread(target=_w, daemon=True).start()
         return
 
     elif step == "AWAITING_UPI" and user_id == OWNER_ID:

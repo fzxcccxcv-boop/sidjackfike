@@ -17,8 +17,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ==========================================
 # CONFIGURATION
 # ==========================================
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-OWNER_ID = 123456789  # Replace with your numeric Telegram User ID
+BOT_TOKEN = "9078572432:AAFLQj4eUJA_Yr4mUDaog4_IUrRQYEkpsng"
+OWNER_ID = 8684812026  # Replace with your numeric Telegram User ID
 
 MANAGEMENT_FILE = "management.json"
 SESSION_FILE = "session.json"
@@ -37,6 +37,42 @@ process_lock = threading.RLock()
 # Live runtime processes: {user_id_str: {"proc": Popen, "logs": deque, "filename": str, "start_time": float, "log_file": str}}
 runtime_processes = {}
 ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
+# ==========================================
+# BOT API 9.4+ NATIVE COLOURED BUTTON WRAPPER
+# ==========================================
+class ColorInlineButton(InlineKeyboardButton):
+    """
+    Supports Telegram Bot API 9.4+ native button background colours:
+    - style="primary" (Solid Blue)
+    - style="success" (Solid Green)
+    - style="danger"  (Solid Red)
+    - style=None      (Default Translucent Theme)
+    Also supports `icon_custom_emoji_id` and works on both old & new pyTelegramBotAPI versions.
+    """
+    def __init__(self, text, callback_data=None, url=None, style=None, icon_custom_emoji_id=None, **kwargs):
+        super().__init__(text=text, callback_data=callback_data, url=url, **kwargs)
+        self.btn_style = style
+        self.btn_icon_emoji = icon_custom_emoji_id
+
+    def to_dict(self):
+        data = super().to_dict()
+        if self.btn_style in ("primary", "success", "danger"):
+            data["style"] = self.btn_style
+        if self.btn_icon_emoji:
+            data["icon_custom_emoji_id"] = str(self.btn_icon_emoji)
+        return data
+
+
+def cbtn(text, callback_data=None, style=None, url=None, icon_custom_emoji_id=None):
+    return ColorInlineButton(
+        text=text,
+        callback_data=callback_data,
+        url=url,
+        style=style,
+        icon_custom_emoji_id=icon_custom_emoji_id
+    )
 
 
 # ==========================================
@@ -70,7 +106,6 @@ def init_json_stores():
             }
             _atomic_write_json(SESSION_FILE, default_sess)
         else:
-            # Clean up any leftover processes from a previous run
             sess = load_session()
             for uid, info in list(sess.get("active_sessions", {}).items()):
                 pid = info.get("pid")
@@ -308,7 +343,6 @@ def start_user_script(user_id, file_path, filename, startup_inputs=None):
         with open(log_file_path, "w", encoding="utf-8") as lf:
             lf.write(f"=== Session Started: {filename} ({datetime.now()}) ===\n")
 
-        # Isolated environment variables
         safe_env = {
             "PATH": os.environ.get("PATH", ""),
             "PYTHONUNBUFFERED": "1",
@@ -399,23 +433,24 @@ def stop_user_script(user_id):
 
 
 # ==========================================
-# COLOURFUL INLINE KEYBOARDS
+# BOT API 9.4 REAL COLOURED INLINE KEYBOARDS
 # ==========================================
 def main_menu_kb(user_id):
     running = is_user_process_running(user_id)
-    term_btn_text = "🟢 🖥️ Live Terminal (ACTIVE)" if running else "🔵 🖥️ Live Terminal (IDLE)"
+    term_text = "🖥️ Live Terminal (ACTIVE)" if running else "🖥️ Live Terminal (IDLE)"
+    term_style = "success" if running else "primary"
 
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
-        InlineKeyboardButton("🟣 📤 Upload .PY File", callback_data="upload_file"),
-        InlineKeyboardButton(term_btn_text, callback_data="terminal_view")
+        cbtn("📤 Upload .PY File", callback_data="upload_file", style="primary"),
+        cbtn(term_text, callback_data="terminal_view", style=term_style)
     )
     kb.add(
-        InlineKeyboardButton("🟠 ⚙️ Profile & Stats", callback_data="profile_settings"),
-        InlineKeyboardButton("🟡 💎 Buy Premium", callback_data="buy_premium")
+        cbtn("⚙️ Profile & Stats", callback_data="profile_settings"),
+        cbtn("💎 Buy Premium", callback_data="buy_premium", style="success")
     )
     if int(user_id) == OWNER_ID:
-        kb.add(InlineKeyboardButton("🔴 👑 Owner Control Panel", callback_data="owner_panel"))
+        kb.add(cbtn("👑 Owner Control Panel", callback_data="owner_panel", style="danger"))
     return kb
 
 
@@ -424,49 +459,48 @@ def terminal_kb(user_id):
     kb = InlineKeyboardMarkup(row_width=2)
     if running:
         kb.add(
-            InlineKeyboardButton("🟢 🔄 Refresh Logs", callback_data="terminal_view"),
-            InlineKeyboardButton("🔵 ⌨️ Send Input (stdin)", callback_data="terminal_stdin")
+            cbtn("🔄 Refresh Logs", callback_data="terminal_view", style="success"),
+            cbtn("⌨️ Send Input (stdin)", callback_data="terminal_stdin", style="primary")
         )
         kb.add(
-            InlineKeyboardButton("🟣 📥 Export Full Log", callback_data="terminal_export"),
-            InlineKeyboardButton("🔴 🛑 Stop Script", callback_data="stop_process")
+            cbtn("📥 Export Full Log", callback_data="terminal_export"),
+            cbtn("🛑 Stop Script", callback_data="stop_process", style="danger")
         )
     else:
         kb.add(
-            InlineKeyboardButton("🟢 🔄 Refresh Status", callback_data="terminal_view"),
-            InlineKeyboardButton("🟣 📥 Export Last Log", callback_data="terminal_export")
+            cbtn("🔄 Refresh Status", callback_data="terminal_view", style="primary"),
+            cbtn("📥 Export Last Log", callback_data="terminal_export")
         )
-        kb.add(InlineKeyboardButton("🟠 📤 Upload New File", callback_data="upload_file"))
+        kb.add(cbtn("📤 Upload New File", callback_data="upload_file", style="success"))
 
-    kb.add(InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="back_home"))
+    kb.add(cbtn("⬅️ Back to Main Menu", callback_data="back_home"))
     return kb
 
 
 def owner_panel_kb():
     mgmt = load_management()
     bot_status = mgmt["settings"].get("bot_status", "ON")
-    toggle_btn = (
-        "🟢 Bot Status: ON (Tap to Turn OFF)"
-        if bot_status == "ON"
-        else "🔴 Bot Status: OFF (Tap to Turn ON)"
-    )
+    if bot_status == "ON":
+        toggle_btn = cbtn("🟢 Bot Status: ON (Tap to Turn OFF)", callback_data="admin_toggle_bot", style="success")
+    else:
+        toggle_btn = cbtn("🔴 Bot Status: OFF (Tap to Turn ON)", callback_data="admin_toggle_bot", style="danger")
 
     kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(InlineKeyboardButton(toggle_btn, callback_data="admin_toggle_bot"))
+    kb.add(toggle_btn)
     kb.add(
-        InlineKeyboardButton("🔵 👥 Users & Active Jobs", callback_data="admin_users"),
-        InlineKeyboardButton("🟣 🖥️ Server Health", callback_data="admin_server")
+        cbtn("👥 Users & Active Jobs", callback_data="admin_users", style="primary"),
+        cbtn("🖥️ Server Health", callback_data="admin_server", style="primary")
     )
     kb.add(
-        InlineKeyboardButton("🟠 📂 Download User Files", callback_data="admin_files"),
-        InlineKeyboardButton("🟡 💳 Set UPI & Price", callback_data="admin_edit_upi")
+        cbtn("📂 Download User Files", callback_data="admin_files", style="success"),
+        cbtn("💳 Set UPI & Price", callback_data="admin_edit_upi", style="success")
     )
     kb.add(
-        InlineKeyboardButton("🟢 💎 Toggle User Premium", callback_data="admin_toggle_prem"),
-        InlineKeyboardButton("🔴 🛑 Kill User Process", callback_data="admin_kill_proc")
+        cbtn("💎 Toggle User Premium", callback_data="admin_toggle_prem", style="primary"),
+        cbtn("🛑 Kill User Process", callback_data="admin_kill_proc", style="danger")
     )
-    kb.add(InlineKeyboardButton("📦 Export management.json & session.json", callback_data="admin_export_json"))
-    kb.add(InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="back_home"))
+    kb.add(cbtn("📦 Export management.json & session.json", callback_data="admin_export_json"))
+    kb.add(cbtn("⬅️ Back to Main Menu", callback_data="back_home"))
     return kb
 
 
@@ -492,7 +526,7 @@ def build_dashboard_text(user):
         f"📂 <b>Total Uploads:</b> {u_info.get('uploads_count', 0)}\n"
         f"🛡️ <b>AST Protection:</b> 🟢 Active\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Select a colourful action button below:</i>"
+        f"<i>Select an action button below:</i>"
     )
 
 
@@ -590,11 +624,11 @@ def handle_callbacks(call):
 
         set_user_state(user_id, "AWAITING_FILE")
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("🔴 ✖️ Cancel Upload", callback_data="back_home"))
+        kb.add(cbtn("✖️ Cancel Upload", callback_data="back_home", style="danger"))
         bot.edit_message_text(
-            "🟣 <b>Upload Python Script</b>\n"
+            "📤 <b>Upload Python Script</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "📤 Please send your <code>.py</code> file as a document now.\n\n"
+            "Please send your <code>.py</code> file as a document now.\n\n"
             "<i>🛡️ Your file will be scanned by the AST Security Engine and logged in management.json.</i>",
             call.message.chat.id,
             call.message.message_id,
@@ -651,9 +685,9 @@ def handle_callbacks(call):
             return
         set_user_state(user_id, "AWAITING_LIVE_STDIN")
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Back to Terminal", callback_data="terminal_view"))
+        kb.add(cbtn("⬅️ Back to Terminal", callback_data="terminal_view", style="primary"))
         bot.edit_message_text(
-            "🔵 <b>⌨️ Send Live Input (stdin)</b>\n"
+            "⌨️ <b>Send Live Input (stdin)</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             "Type and send the line of text you want to pass directly into your running script:",
             call.message.chat.id,
@@ -670,7 +704,7 @@ def handle_callbacks(call):
             bot.send_document(
                 call.message.chat.id,
                 doc,
-                caption=f"🟣 <b>Full Terminal Log</b> (User <code>{user_id}</code>)"
+                caption=f"📥 <b>Full Terminal Log</b> (User <code>{user_id}</code>)"
             )
         bot.answer_callback_query(call.id, "📥 Log exported!")
 
@@ -690,7 +724,7 @@ def handle_callbacks(call):
         sess_state = get_user_state(user_id).get("step", "IDLE")
 
         prof_text = (
-            f"🟠 <b>⚙️ User Profile & Settings</b>\n"
+            f"⚙️ <b>User Profile & Settings</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>Name:</b> {u_info.get('first_name', user.first_name)}\n"
             f"🪪 <b>User ID:</b> <code>{user_id}</code>\n"
@@ -704,10 +738,10 @@ def handle_callbacks(call):
         )
         kb = InlineKeyboardMarkup(row_width=2)
         kb.add(
-            InlineKeyboardButton("🟣 📤 Upload File", callback_data="upload_file"),
-            InlineKeyboardButton("🟡 💎 Upgrade Plan", callback_data="buy_premium")
+            cbtn("📤 Upload File", callback_data="upload_file", style="primary"),
+            cbtn("💎 Upgrade Plan", callback_data="buy_premium", style="success")
         )
-        kb.add(InlineKeyboardButton("⬅️ Back to Menu", callback_data="back_home"))
+        kb.add(cbtn("⬅️ Back to Menu", callback_data="back_home"))
         bot.edit_message_text(prof_text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     # --- BUY PREMIUM ---
@@ -715,7 +749,7 @@ def handle_callbacks(call):
         price = mgmt["settings"].get("premium_price", "₹199 / Month")
         upi = mgmt["settings"].get("upi_id", "yourname@upi")
         prem_text = (
-            f"🟡 <b>💎 Upgrade to Premium Membership</b>\n"
+            f"💎 <b>Upgrade to Premium Membership</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Plan Price:</b> <code>{price}</code>\n"
             f"🏦 <b>Official UPI ID:</b> <code>{upi}</code>\n\n"
@@ -724,7 +758,7 @@ def handle_callbacks(call):
             f"2️⃣ Send the screenshot along with your User ID (<code>{user_id}</code>) to the Bot Owner."
         )
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Back to Menu", callback_data="back_home"))
+        kb.add(cbtn("⬅️ Back to Menu", callback_data="back_home", style="primary"))
         bot.edit_message_text(prem_text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     # ==========================================
@@ -739,7 +773,7 @@ def handle_callbacks(call):
         active_count = sum(1 for k in runtime_processes if is_user_process_running(k))
 
         panel_text = (
-            f"🔴 <b>👑 Owner Administration Panel</b>\n"
+            f"👑 <b>Owner Administration Panel</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👥 <b>Registered Users:</b> {total_users}\n"
             f"🟢 <b>Running Scripts:</b> {active_count}\n"
@@ -778,12 +812,12 @@ def handle_callbacks(call):
         user_list_str = "\n".join(lines) if lines else "No registered users yet."
 
         text = (
-            f"🔵 <b>👥 Registered Users & Active Jobs</b>\n"
+            f"👥 <b>Registered Users & Active Jobs</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"{user_list_str}"
         )
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Back to Owner Panel", callback_data="owner_panel"))
+        kb.add(cbtn("⬅️ Back to Owner Panel", callback_data="owner_panel", style="primary"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     elif data == "admin_server":
@@ -795,7 +829,7 @@ def handle_callbacks(call):
         boot_dt = datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M")
 
         srv_text = (
-            f"🟣 <b>🖥️ Server Hardware & JSON Status</b>\n"
+            f"🖥️ <b>Server Hardware & JSON Status</b>\n"
             f"<i>(Host IP & credentials strictly masked)</i>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"⚙️ <b>CPU Load:</b> {cpu}%\n"
@@ -805,7 +839,7 @@ def handle_callbacks(call):
             f"⏱️ <b>Server Boot Time:</b> {boot_dt}"
         )
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Back to Owner Panel", callback_data="owner_panel"))
+        kb.add(cbtn("⬅️ Back to Owner Panel", callback_data="owner_panel", style="primary"))
         bot.edit_message_text(srv_text, call.message.chat.id, call.message.message_id, reply_markup=kb)
 
     elif data == "admin_files":
@@ -815,17 +849,19 @@ def handle_callbacks(call):
         kb = InlineKeyboardMarkup(row_width=1)
         for f_entry in reversed(files_list):
             fid = f_entry["file_id"]
-            badge = "🟢" if f_entry.get("status") == "SAFE" else "🔴"
+            is_safe = f_entry.get("status") == "SAFE"
+            btn_style = "success" if is_safe else "danger"
             kb.add(
-                InlineKeyboardButton(
-                    f"{badge} #{fid} | {f_entry['filename']} (User: {f_entry['user_id']})",
-                    callback_data=f"dlfile_{fid}"
+                cbtn(
+                    f"📥 #{fid} | {f_entry['filename']} (User: {f_entry['user_id']})",
+                    callback_data=f"dlfile_{fid}",
+                    style=btn_style
                 )
             )
-        kb.add(InlineKeyboardButton("⬅️ Back to Owner Panel", callback_data="owner_panel"))
+        kb.add(cbtn("⬅️ Back to Owner Panel", callback_data="owner_panel", style="primary"))
         bot.edit_message_text(
-            "🟠 <b>📂 Recent Uploaded Files (Tap to Download)</b>\n"
-            "<i>All files uploaded by users are indexed in management.json:</i>",
+            "📂 <b>Recent Uploaded Files (Tap to Download)</b>\n"
+            "<i>Green = AST Safe | Red = AST Blocked</i>",
             call.message.chat.id,
             call.message.message_id,
             reply_markup=kb
@@ -858,9 +894,9 @@ def handle_callbacks(call):
             return
         set_user_state(user_id, "AWAITING_UPI")
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Cancel", callback_data="owner_panel"))
+        kb.add(cbtn("✖️ Cancel", callback_data="owner_panel", style="danger"))
         bot.edit_message_text(
-            "🟡 <b>💳 Update Premium Price & UPI ID</b>\n\n"
+            "💳 <b>Update Premium Price & UPI ID</b>\n\n"
             "Send the new details in this exact format:\n"
             "<code>Price | UPI_ID</code>\n\n"
             "Example:\n<code>₹249 / Month | merchant@okaxis</code>",
@@ -874,9 +910,9 @@ def handle_callbacks(call):
             return
         set_user_state(user_id, "AWAITING_PREM_UID")
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Cancel", callback_data="owner_panel"))
+        kb.add(cbtn("✖️ Cancel", callback_data="owner_panel", style="danger"))
         bot.edit_message_text(
-            "🟢 <b>💎 Grant / Revoke User Premium</b>\n\n"
+            "💎 <b>Grant / Revoke User Premium</b>\n\n"
             "Send the numeric <b>User ID</b> of the user whose Premium status you want to toggle:",
             call.message.chat.id,
             call.message.message_id,
@@ -888,9 +924,9 @@ def handle_callbacks(call):
             return
         set_user_state(user_id, "AWAITING_KILL_UID")
         kb = InlineKeyboardMarkup()
-        kb.add(InlineKeyboardButton("⬅️ Cancel", callback_data="owner_panel"))
+        kb.add(cbtn("✖️ Cancel", callback_data="owner_panel", style="danger"))
         bot.edit_message_text(
-            "🔴 <b>🛑 Force-Stop User Script</b>\n\n"
+            "🛑 <b>Force-Stop User Script</b>\n\n"
             "Send the numeric <b>User ID</b> whose active process you want to terminate:",
             call.message.chat.id,
             call.message.message_id,
@@ -944,11 +980,9 @@ def handle_document_message(message):
     with open(saved_path, "wb") as f:
         f.write(downloaded_bytes)
 
-    # AST Security Verification
     is_safe, issues = scan_python_file(saved_path)
     scan_status = "SAFE" if is_safe else "BLOCKED"
 
-    # Save record in management.json
     with json_lock:
         mgmt = load_management()
         uid = str(user_id)
@@ -978,7 +1012,6 @@ def handle_document_message(message):
         )
         return
 
-    # Save session state in session.json
     set_user_state(
         user_id,
         "AWAITING_STARTUP_INPUT",
@@ -987,8 +1020,8 @@ def handle_document_message(message):
     )
 
     kb = InlineKeyboardMarkup()
-    kb.add(InlineKeyboardButton("🟢 ▶️ Start Immediately (No Inputs)", callback_data="run_no_input"))
-    kb.add(InlineKeyboardButton("🔴 ✖️ Cancel", callback_data="back_home"))
+    kb.add(cbtn("▶️ Start Immediately (No Inputs)", callback_data="run_no_input", style="success"))
+    kb.add(cbtn("✖️ Cancel", callback_data="back_home", style="danger"))
 
     bot.reply_to(
         message,
@@ -996,7 +1029,7 @@ def handle_document_message(message):
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📄 <b>File:</b> <code>{safe_name}</code>\n\n"
         f"⌨️ If your script requires startup <code>input()</code> values, reply with each input on a new line.\n"
-        f"Or tap <b>🟢 Start Immediately</b> below:",
+        f"Or tap <b>▶️ Start Immediately</b> below:",
         reply_markup=kb
     )
 
@@ -1099,5 +1132,5 @@ def handle_text_states(message):
 
 if __name__ == "__main__":
     init_json_stores()
-    print("✅ Hoster Bot initialized with management.json & session.json...")
+    print("✅ Hoster Bot initialized with Bot API 9.4 real coloured buttons...")
     bot.infinity_polling(skip_pending=True)
